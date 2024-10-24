@@ -16,42 +16,42 @@
             variant="outline-secondary"
             :href="`/printers/${printer.id}/control/`"
             class="px-4 mr-2"
-            >Open&nbsp;Details
+            >{{$t("Open")}}&nbsp;{{$t("Details")}}
           </b-button>
           <b-dropdown right no-caret toggle-class="icon-btn">
             <template #button-content>
               <i class="fas fa-ellipsis-v"></i>
             </template>
             <b-dropdown-item href="#" @click.prevent="onSharePrinter()">
-              <i class="fas fa-share-alt fa-lg"></i>Share
+              <i class="fas fa-share-alt fa-lg"></i>{{$t("Share")}}
             </b-dropdown-item>
             <b-dropdown-item :href="octoPrintTunnelUrl()">
               <svg class="menu-icon">
                 <use href="#svg-tunnel" />
               </svg>
-              {{ printer.agentDisplayName() }} Tunnel
+              {{ printer.agentDisplayName() }} {{$t("Tunnel")}}
             </b-dropdown-item>
             <div class="dropdown-divider"></div>
             <b-dropdown-item :href="settingsUrl()">
-              <i class="fas fa-wrench fa-lg"></i>Configure
+              <i class="fas fa-wrench fa-lg"></i>{{$t("Configure")}}
             </b-dropdown-item>
           </b-dropdown>
         </div>
       </div>
-      <streaming-box :printer="printer" :webrtc="webrtc" :autoplay="isProAccount" />
+      <streaming-box :printer="printer" :webrtc="webrtc" :autoplay="isProAccount" :webcam="webcam" />
       <div
         v-if="printer.alertUnacknowledged()"
         class="failure-alert card-body bg-warning px-2 py-1"
       >
         <i class="fas fa-exclamation-triangle align-middle"></i>
-        <span class="align-middle">Failure Detected!</span>
+        <span class="align-middle">{{ $t("Failure Detected!") }}</span>
         <button
           id="not-a-failure"
           type="button"
           class="btn btn-outline-primary btn-sm float-right"
           @click="onNotAFailureClicked($event, false)"
         >
-          Not a failure?
+          {{$t("Not a failure?")}}
         </button>
       </div>
 
@@ -62,11 +62,11 @@
           style="left: 0; width: 100%; top: 50%; margin-top: -55px"
         >
           <H1><i class="far fa-eye-slash"></i></H1>
-          <h5 class="text-warning">Failure Detection is Off</h5>
+          <h5 class="text-warning">{{ $t("Failure Detection is Off") }}</h5>
           <small v-if="printer.not_watching_reason"
             >{{ printer.not_watching_reason }}.
-            <a href="https://www.obico.io/docs/user-guides/detective-not-watching/" target="_blank"
-              >Learn more. <small><i class="fas fa-external-link-alt"></i></small></a
+            <a :href="getDocUrl('/user-guides/detective-not-watching/')" target="_blank"
+              >{{ $t("Learn more. ") }}<small><i class="fas fa-external-link-alt"></i></small></a
           ></small>
           <div></div>
         </div>
@@ -114,10 +114,13 @@
               <div class="row justify-content-center px-3">
                 <div class="col-12 setting-item">
                   <label class="toggle-label" :for="'watching_enabled-toggle-' + printer.id"
-                    >Enable AI failure detection
-                    <div v-if="!watchForFailures" class="text-muted font-weight-light font-size-sm">
-                      AI failure detection is disabled. You are on your own.
-                    </div>
+                    >
+                    <i18next :translation="$t('Enable AI failure detection {localizedDom}')">
+                      <template #localizedDom>
+                        <div v-if="!watchForFailures" class="text-muted font-weight-light font-size-sm"> {{$t("AI failure detection is disabled. You are on your own")}}.</div>
+                      </template>
+                    </i18next>
+
                   </label>
                   <div class="custom-control custom-switch">
                     <input
@@ -138,11 +141,12 @@
               </div>
               <div class="row justify-content-center px-3">
                 <div class="col-12 setting-item">
-                  <label class="toggle-label" :for="'pause-toggle-' + printer.id"
-                    >Pause on detected failures
-                    <div v-if="!pauseOnFailure" class="text-muted font-weight-light font-size-sm">
-                      You will still be alerted via notifications
-                    </div>
+                  <label class="toggle-label" :for="'pause-toggle-' + printer.id">
+                    <i18next :translation="$t('Pause on detected failures {localizedDom}')">
+                      <template #localizedDom>
+                        <div v-if="!pauseOnFailure" class="text-muted font-weight-light font-size-sm"> {{$t("You will still be alerted via notifications")}}</div>
+                      </template>
+                    </i18next>
                   </label>
                   <div class="custom-control custom-switch">
                     <input
@@ -167,8 +171,8 @@
           <div v-if="section_toggles.time" id="print-time">
             <div class="py-2">
               <div class="row text-muted">
-                <small class="col-5 offset-2"> Remaining </small>
-                <small class="col-5"> Total </small>
+                <small class="col-5 offset-2">{{ $t(" Remaining ") }}</small>
+                <small class="col-5">{{ $t(" Total ") }}</small>
               </div>
               <div class="row">
                 <div class="col-2 text-muted">
@@ -276,7 +280,8 @@ export default {
         time: getLocalPref(LocalPrefNames.Time + String(this.printer.id), Hide),
         statusTemp: getLocalPref(LocalPrefNames.StatusTemp + String(this.printer.id), Show),
       },
-      webrtc: WebRTCConnection(),
+      webrtc: null,
+      webcam: null,
     }
   },
   computed: {
@@ -359,6 +364,16 @@ export default {
       {
         onPrinterUpdateReceived: (data) => {
           this.$emit('PrinterUpdated', this.updatedPrinter(data))
+
+          if (!this.webrtc && (data?.settings?.webcams || []).length > 0) {
+            const webcams = data.settings?.webcams
+            this.webcam = webcams?.find(webcam => webcam.is_primary_camera === true);
+            if (this.webcam) {
+              this.webrtc = WebRTCConnection(this.webcam.stream_mode, this.webcam.stream_id)
+              this.webrtc.openForPrinter(this.printer.id, this.printer.auth_token)
+              this.printerComm.setWebRTC(this.webrtc)
+            }
+          }
         },
         onStatusReceived: (printerStatus) => {
           // Backward compatibility: octoprint_data is for OctoPrint-Obico 2.1.2 or earlier, or moonraker-obico 0.5.1 or earlier
@@ -368,9 +383,6 @@ export default {
       }
     )
     this.printerComm.connect()
-
-    this.webrtc.openForPrinter(this.printer.id, this.printer.auth_token)
-    this.printerComm.setWebRTC(this.webrtc)
   },
 
   methods: {
@@ -400,10 +412,10 @@ export default {
     },
     onNotAFailureClicked(ev, resumePrint) {
       this.$swal.Confirm.fire({
-        title: 'Noted!',
-        html: '<p>Do you want to mute failure detection on for this print?</p><small>If you select "Mute", failure detection will be turned off for this print, but will be automatically turned on for your next print.</small>',
-        confirmButtonText: 'Mute',
-        cancelButtonText: 'Cancel',
+        title: `${this.$i18next.t('Noted!')}`,
+        html: `<p>${this.$i18next.t("Do you want to mute failure detection on for this print?")}</p><small>${this.$i18next.t("If you select 'Mute', failure detection will be turned off for this print, but will be automatically turned on for your next print.")}</small>`,
+        confirmButtonText: `${this.$i18next.t('Mute')}`,
+        cancelButtonText: `${this.$i18next.t('Cancel')}`,
       }).then((result) => {
         if (result.isConfirmed) {
           // Hack: So that 2 APIs are not called at the same time
@@ -498,7 +510,7 @@ export default {
           }
         })
         .catch((error) => {
-          this.errorDialog(error, 'Failed to update printer')
+          this.errorDialog(error, `${this.$i18next.t('Failed to update printer')}`)
         })
     },
 

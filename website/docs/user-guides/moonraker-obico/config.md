@@ -5,13 +5,21 @@ title: Configurations
 
 Following Klipper toolchain's convention, the configuration file for **Obico for Klipper** is typically located at `~/printer_data/config/moonraker-obico.cfg`
 
-:::caution
-You need to restart the service for any change to take effect:
+You can SSH to your printer or Raspberry Pi and use editor such as `nano` to make changes to the configuration file.
 
-`systemctl restart moonraker-obico`
+Alternatively, you can use the web interface to make changes if you are using Mainsail or Fluidd.
+
+![](/img/user-guides/helpdocs/open-moonraker-obico-cfg.png)
+
+:::caution
+You need to restart the printer or Raspberry Pi for any change to take effect.
 :::
 
-An example of the configuration file:
+The ways to restart the printer or Raspberry Pi are slightly different between Mainsail and Fluidd. But the button is usually located at the top-right corner of the screen.
+
+![](/img/user-guides/helpdocs/restart-printer-pi.png)
+
+## An example of the configuration file
 
 ```
 [server]
@@ -35,7 +43,7 @@ disable_video_streaming = False
 # target_fps = 25
 # flip_h = False
 # flip_v = False
-# rotate_90 = False
+# rotation = 0
 # aspect_ratio_169 = False
 
 [logging]
@@ -64,21 +72,14 @@ The configuration for connecting to the Obico Server.
 
 ## `[webcam]` section {#webcam-section}
 
-- `disable_video_streaming`: Default to `False`. Change it to `True` to disable the webcam streaming [in some rare cases](https://www.obico.io/docs/user-guides/disable-25-fps-streaming/).
+In the majority of the cases, you will only need the minimum `[webcam]` section as follows:
 
-:::caution
-Usually, you don't need to configure the following settings in the `[webcam]` section. In that case, **Obico for Klipper** will automatically obtain them from Moonraker.
-:::
+```
+[webcam]
+disable_video_streaming = False
+```
 
-Set values in this section only when **Obico for Klipper** can't obtain these configurations, which is very rare.
-
-- `snapshot_url`:
-- `stream_url`:
-- `target_fps`:
-- `flip_h`:
-- `flip_v`:
-- `rotate_90`:
-- `aspect_ratio_169`:
+If you have a special webcam setup, or have run into issues with your webcam in Obico, check out the detailed [webcam configuration guide](webcam.md).
 
 ## `[logging]` section {#logging-section}
 

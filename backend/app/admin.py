@@ -36,20 +36,27 @@ class UserAdmin(DjangoUserAdmin):
     """Define admin model for custom User model with no email field."""
 
     fieldsets = (
-        (None, {'fields': ('email', 'password')}),
+        (None, {'fields': ('email', 'password', 'syndicate')}),
         (_('Personal info'), {'fields': ('first_name', 'last_name')}),
         (_('Permissions'), {'fields': ('is_active', 'is_staff', 'is_superuser',
                                        'groups', 'user_permissions')}),
         (_('Important dates'), {'fields': ('last_login', 'date_joined')}),
     )
+
     add_fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('email', 'password1', 'password2'),
+            'fields': ('email', 'password1', 'password2', 'syndicate'),
         }),
     )
+    
     ordering = ('email',)
     actions = [send_test_email]
+    
+    def get_readonly_fields(self, request, obj=None):
+        if obj:
+            return self.readonly_fields + ('syndicate',)
+        return self.readonly_fields
 
 
 class PrinterAdmin(admin.ModelAdmin):
@@ -59,7 +66,8 @@ class PrinterAdmin(admin.ModelAdmin):
 class NotificationSettingAdmin(admin.ModelAdmin):
     list_select_related = True
     list_display = ('get_user', 'name', 'enabled', 'notify_on_failure_alert', 'notify_on_print_done',
-        'notify_on_print_cancelled', 'notify_on_filament_change', 'notify_on_other_print_events', 'notify_on_heater_status')
+        'notify_on_print_cancelled', 'notify_on_filament_change', 'notify_on_heater_status',
+        'notify_on_print_start','notify_on_print_pause','notify_on_print_resume',)
     search_fields = ('user__email',)
     readonly_fields = ['user', ]
 

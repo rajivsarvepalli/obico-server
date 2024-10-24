@@ -1,6 +1,5 @@
 import VueRouter from 'vue-router'
-import routes from '@config/user-preferences/routes'
-import wizardRoutes from '@src/views/printer-wizard/wizard-routes'
+import prefRoutes from '@config/user-preferences/pref-routes'
 
 import NewOctoPrintTunnelPage from '@src/views/NewOctoPrintTunnelPage.vue'
 import OctoPrintTunnelPage from '@src/views/OctoPrintTunnelPage.vue'
@@ -13,13 +12,18 @@ import UploadPrintPage from '@src/views/UploadPrintPage.vue'
 import PrinterListPage from '@src/views/PrinterListPage.vue'
 import SharedPrinterPage from '@src/views/SharedPrinterPage.vue'
 import PrinterSettingsPage from '@src/views/PrinterSettingsPage.vue'
-import PrinterWizardPage from '@src/views/printer-wizard/PrinterWizardPage.vue'
+import PrinterLinkingPage from '@src/views/printer-wizard/PrinterLinkingPage.vue'
+import TargetPlatformSelectionPage from '@src/views/printer-wizard/TargetPlatformSelectionPage.vue'
+import ObicoInstallationGuidePage from '@src/views/printer-wizard/ObicoInstallationGuidePage.vue'
+import AddPrinterSuccessPage from '@src/views/printer-wizard/AddPrinterSuccessPage.vue'
 import PrinterControlPage from '@src/views/PrinterControlPage.vue'
 import GCodeFoldersPage from '@src/views/GCodeFoldersPage.vue'
 import GCodeFilePage from '@src/views/GCodeFilePage.vue'
 import UserPreferencesPage from '@src/views/UserPreferencesPage.vue'
 import PrinterEventsPage from '@src/views/PrinterEventsPage.vue'
 import PrinterTerminalPage from '@src/views/PrinterTerminalPage.vue'
+import FirstLayerInspectionImagePage from '@src/views/FirstLayerInspectionImagePage.vue'
+
 
 const router = new VueRouter({
   mode: 'history',
@@ -44,14 +48,25 @@ const router = new VueRouter({
       path: '/user_preferences',
       component: UserPreferencesPage,
     },
-    ...Object.values(routes).map((route) => ({
+    {
+      path: '/printers/wizard/',
+      component: TargetPlatformSelectionPage,
+    },
+    {
+      path: '/printers/wizard/guide/:targetPlatform/',
+      component: ObicoInstallationGuidePage,
+    },
+    {
+      path: '/printers/wizard/link/:targetPlatform/',
+      component: PrinterLinkingPage,
+    },
+    {
+      path: '/printers/wizard/success/:printerId/',
+      component: AddPrinterSuccessPage,
+    },
+    ...Object.values(prefRoutes).map((route) => ({
       path: route,
       component: UserPreferencesPage,
-    })),
-
-    ...Object.values(wizardRoutes).map((route) => ({
-      path: route,
-      component: PrinterWizardPage,
     })),
   ],
 })
@@ -63,7 +78,7 @@ const components = {
   PrinterListPage,
   SharedPrinterPage,
   PrinterSettingsPage,
-  PrinterWizardPage,
+  PrinterLinkingPage,
   PrinterControlPage,
   GCodeFoldersPage,
   GCodeFilePage,
@@ -75,6 +90,7 @@ const components = {
   UserPreferencesPage,
   PrinterEventsPage,
   PrinterTerminalPage,
+  FirstLayerInspectionImagePage,
 }
 
 export { router, components }

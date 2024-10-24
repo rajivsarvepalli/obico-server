@@ -115,6 +115,7 @@ class Handler(object):
         return UserContext(
             id=user.id,
             email=user.email,
+            syndicate_name=user.syndicate.name if user.syndicate else '',
             first_name=user.first_name,
             last_name=user.last_name,
             dh_balance=user.dh_balance,
@@ -135,8 +136,14 @@ class Handler(object):
         if notification_type in (notification_types.HeaterCooledDown, notification_types.HeaterTargetReached):
             return Feature.notify_on_heater_status
 
-        if notification_type in list(notification_types.OTHER_PRINT_EVENT_MAP.values()):
-            return Feature.notify_on_other_print_events
+        if notification_type == notification_types.PrintStarted:
+            return Feature.notify_on_print_start
+
+        if notification_type == notification_types.PrintResumed:
+            return Feature.notify_on_print_resume
+
+        if notification_type == notification_types.PrintPaused:
+            return Feature.notify_on_print_pause
 
         return None
 

@@ -2,11 +2,12 @@ import mimetypes
 import os
 from binascii import hexlify
 import re
+from wsgiref.util import FileWrapper
 
 from django.shortcuts import render, redirect
 from django.views import View
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponse, JsonResponse, HttpResponseForbidden
+from django.http import HttpResponse, JsonResponse, HttpResponseForbidden, StreamingHttpResponse
 from django.contrib import messages
 from django.urls import reverse
 from django.conf import settings
@@ -18,18 +19,20 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.clickjacking import xframe_options_exempt
 import requests
 import json
-
-from allauth.account.views import LoginView, SignupView
+from django.utils.translation import gettext_lazy as _
+from allauth.account.views import LoginView, SignupView, PasswordResetView
 
 from lib.url_signing import HmacSignedUrl
 from lib.view_helpers import get_print_or_404, get_printer_or_404, get_paginator, get_template_path
-
 from app.models import (User, Printer, SharedResource, GCodeFile, NotificationSetting)
 from app.forms import SocialAccountAwareLoginForm
 from lib import channels
 from lib.file_storage import save_file_obj
 from app.tasks import preprocess_timelapse
 from lib import cache
+from lib.syndicate import syndicate_from_request
+from app.forms import SyndicateSpecificResetPasswordForm
+
 
 
 def index(request):
@@ -51,6 +54,21 @@ class SocialAccountAwareSignupView(SignupView):
         if settings.ACCOUNT_ALLOW_SIGN_UP:
             return super().dispatch(request, *args, **kwargs)
         return redirect('/accounts/login/')
+    def form_valid(self, form):
+            email = form.cleaned_data['email']
+            syndicate = syndicate_from_request(self.request)
+            if User.objects.filter(emailaddress__email__iexact=email, syndicate=syndicate).exists():
+                form.add_error('email', _('A user is already registered with this email address.'))
+                return self.form_invalid(form)
+            return super(SocialAccountAwareSignupView, self).form_valid(form)
+
+class SyndicateSpecificPasswordResetView(PasswordResetView):
+    form_class = SyndicateSpecificResetPasswordForm
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['request'] = self.request
+        return kwargs
 
 @login_required
 def printers(request, template_name='printers.html'):
@@ -165,8 +183,10 @@ def unsubscribe_email(request):
         nsetting.notify_on_print_done = False
         nsetting.notify_on_print_cancelled = False
         nsetting.notify_on_filament_change = False
-        nsetting.notify_on_other_print_events = False
         nsetting.notify_on_heater_status = False
+        nsetting.notify_on_print_start = False
+        nsetting.notify_on_print_pause = False
+        nsetting.notify_on_print_resume = False
         nsetting.save()
     elif email_list == 'account_notification':
         user.account_notification_by_email = False
@@ -206,7 +226,7 @@ def upload_print(request):
     if request.method == 'POST':
         _, file_extension = os.path.splitext(request.FILES['file'].name)
         video_path = f'{request.user.id}/{str(timezone.now().timestamp())}{file_extension}'
-        save_file_obj(f'uploaded/{video_path}', request.FILES['file'], settings.PICS_CONTAINER, long_term_storage=False)
+        save_file_obj(f'uploaded/{video_path}', request.FILES['file'], settings.PICS_CONTAINER, request.user.syndicate.name, long_term_storage=True)
         preprocess_timelapse.delay(request.user.id, video_path, request.FILES['file'].name)
 
         return JsonResponse(dict(status='Ok'))
@@ -220,18 +240,15 @@ def print_shot_feedback(request, pk):
     return render(request, 'print_shot_feedback.html', {'object': _print})
 
 
-### GCode File page ###
-
 @login_required
 def g_code_folders(request, template_dir=None):
     return render(request, get_template_path('g_code_folders', template_dir))
+
 
 @login_required
 def g_code_files(request, template_dir=None):
     return render(request, get_template_path('g_code_files', template_dir))
 
-
-## Notifications page
 
 @login_required
 def printer_events(request):
@@ -241,9 +258,46 @@ def printer_events(request):
     return render(request, 'printer_events.html')
 
 
+@login_required
+def first_layer_inspection_images(request):
+    return render(request, 'first_layer_inspection_images.html')
+
+
 ### Misc ####
 
 # Was surprised to find there is no built-in way in django to serve uploaded files in both debug and production mode
+
+class RangeFileWrapper(object):
+    def __init__(self, filelike, blksize=8192, offset=0, length=None):
+        self.filelike = filelike
+        self.filelike.seek(offset, os.SEEK_SET)
+        self.remaining = length
+        self.blksize = blksize
+
+    def close(self):
+        if hasattr(self.filelike, 'close'):
+            self.filelike.close()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.remaining is None:
+            # If remaining is None, we're reading the entire file.
+            data = self.filelike.read(self.blksize)
+            if data:
+                return data
+            raise StopIteration()
+        else:
+            if self.remaining <= 0:
+                raise StopIteration()
+            data = self.filelike.read(min(self.remaining, self.blksize))
+            if not data:
+                raise StopIteration()
+            self.remaining -= len(data)
+            return data
+
+range_re = re.compile(r'bytes\s*=\s*(\d+)\s*-\s*(\d*)', re.I)
 def serve_jpg_file(request, file_path):
     url = HmacSignedUrl(request.get_full_path())
     if not url.is_authorized():
@@ -258,12 +312,38 @@ def serve_jpg_file(request, file_path):
         content_type = "application/octet-stream"
     if not os.path.exists(full_path):
         raise Http404("Requested file does not exist")
-    with open(full_path, 'rb') as fh:
-        return HttpResponse(fh, content_type=content_type)
 
+    fh = open(full_path, 'rb')
+    try:
+        range_header = request.META.get('HTTP_RANGE', '').strip()
+        range_match = range_re.match(range_header)
+        size = os.path.getsize(full_path)
+
+        if range_match:
+            first_byte, last_byte = range_match.groups()
+            first_byte = int(first_byte) if first_byte else 0
+            last_byte = int(last_byte) if last_byte else size - 1
+            if last_byte >= size:
+                last_byte = size - 1
+            length = last_byte - first_byte + 1
+            resp = StreamingHttpResponse(RangeFileWrapper(fh, offset=first_byte, length=length), status=206, content_type=content_type)
+            resp['Content-Length'] = str(length)
+            resp['Content-Range'] = 'bytes %s-%s/%s' % (first_byte, last_byte, size)
+        else:
+            resp = StreamingHttpResponse(FileWrapper(fh), content_type=content_type)
+            resp['Content-Length'] = str(size)
+
+        resp['Accept-Ranges'] = 'bytes'
+        return resp
+    except:
+        pass
 
 # Health check that touches DB and redis
 def health_check(request):
     User.objects.all()[:1]
     cache.printer_pic_get(0)
     return HttpResponse('Okay')
+
+def orca_slicer_authorized(request):
+    access_granted = 'true' if request.GET.get('error') != 'access_denied' else 'false'
+    return render(request, 'orca_slicer_authorized.html', {'access_granted': access_granted})

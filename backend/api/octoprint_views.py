@@ -23,12 +23,14 @@ import os
 import logging
 from ipware import get_client_ip
 from binascii import hexlify
+from ipware.utils import (
+    cleanup_ip, is_valid_ip, is_public_ip)
 
 from .utils import report_validationerror
-from .printer_discovery import (
-    DeviceInfo,
+from lib.printer_discovery import (
     pull_messages_for_device,
-    update_presence_for_device)
+    update_presence_for_device,)
+from lib.one_time_passcode import request_one_time_passcode
 from .authentication import PrinterAuthentication
 from lib.file_storage import save_file_obj
 from lib import cache
@@ -41,8 +43,7 @@ from lib.prediction import update_prediction_with_detections, is_failing, VISUAL
 from lib.channels import send_status_to_web
 from config.celery import celery_app
 from .serializers import VerifyCodeInputSerializer, OneTimeVerificationCodeSerializer, GCodeFileSerializer
-
-from PIL import Image, ImageFile
+from PIL import Image, ImageFile, UnidentifiedImageError
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 LOGGER = logging.getLogger(__name__)
@@ -76,6 +77,15 @@ class OctoPrintPicView(APIView):
 
     def post(self, request):
         printer = request.auth
+        user = request.user
+
+        is_primary_camera = request.POST.get('is_primary_camera', 'true').lower() == 'true' # if not specified, it's from a legacy agent and hence is primary camera
+        is_nozzle_camera = request.POST.get('is_nozzle_camera', 'false').lower() == 'true'
+        camera_name = request.POST.get('camera_name', '') # If camera_name is not provided, it's from a legacy agent.
+
+        # TODO: Think about the use cases when non-primary camera sends a pic. For now, we are ignoring it.
+        if not is_primary_camera:
+            return Response({'result': 'ok'})
 
         if settings.PIC_POST_LIMIT_PER_MINUTE and cache.pic_post_over_limit(printer.id, settings.PIC_POST_LIMIT_PER_MINUTE):
             return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
@@ -88,17 +98,19 @@ class OctoPrintPicView(APIView):
         pic = request.FILES['pic']
         pic = cap_image_size(pic)
 
-        if (not printer.current_print) or request.POST.get('viewing_boost'):
+        viewing_boost = request.POST.get('viewing_boost')
+        viewing_boost = True if (viewing_boost is not None and viewing_boost.lower() == 'true') else False
+        if (not printer.current_print) or viewing_boost:
             # Not need for failure detection if not printing, or the pic was send for viewing boost.
             pic_path = f'snapshots/{printer.id}/latest_unrotated.jpg'
-            internal_url, external_url = save_file_obj(pic_path, pic, settings.PICS_CONTAINER, long_term_storage=False)
+            internal_url, external_url = save_file_obj(pic_path, pic, settings.PICS_CONTAINER, user.syndicate.name, long_term_storage=False)
             cache.printer_pic_set(printer.id, {'img_url': external_url}, ex=IMG_URL_TTL_SECONDS)
             send_status_to_web(printer.id)
             return Response({'result': 'ok'})
 
         pic_id = str(timezone.now().timestamp())
         pic_path = f'raw/{printer.id}/{printer.current_print.id}/{pic_id}.jpg'
-        internal_url, external_url = save_file_obj(pic_path, pic, settings.PICS_CONTAINER, long_term_storage=False)
+        internal_url, external_url = save_file_obj(pic_path, pic, settings.PICS_CONTAINER, user.syndicate.name, long_term_storage=False)
 
         img_url_updated = self.detect_if_needed(printer, pic, pic_id, internal_url)
         if not img_url_updated:
@@ -127,6 +139,8 @@ class OctoPrintPicView(APIView):
         req = requests.get(settings.ML_API_HOST + '/p/', params={'img': raw_pic_url}, headers=ml_api_auth_headers(), verify=False)
         req.raise_for_status()
         detections = req.json()['detections']
+        if settings.DEBUG:
+            LOGGER.info(f'Detections: {detections}')
 
         update_prediction_with_detections(prediction, detections)
         prediction.save()
@@ -141,14 +155,14 @@ class OctoPrintPicView(APIView):
         tagged_img.seek(0)
 
         pic_path = f'tagged/{printer.id}/{printer.current_print.id}/{pic_id}.jpg'
-        _, external_url = save_file_obj(pic_path, tagged_img, settings.PICS_CONTAINER, long_term_storage=False)
+        _, external_url = save_file_obj(pic_path, tagged_img, settings.PICS_CONTAINER, printer.user.syndicate.name, long_term_storage=False)
         cache.printer_pic_set(printer.id, {'img_url': external_url}, ex=IMG_URL_TTL_SECONDS)
 
         prediction_json = serializers.serialize("json", [prediction, ])
         p_out = io.BytesIO()
         p_out.write(prediction_json.encode('UTF-8'))
         p_out.seek(0)
-        save_file_obj(f'p/{printer.id}/{printer.current_print.id}/{pic_id}.json', p_out, settings.PICS_CONTAINER, long_term_storage=False)
+        save_file_obj(f'p/{printer.id}/{printer.current_print.id}/{pic_id}.json', p_out, settings.PICS_CONTAINER, printer.user.syndicate.name, long_term_storage=False)
 
         if is_failing(prediction, printer.detective_sensitivity, escalating_factor=settings.ESCALATING_FACTOR):
             # The prediction is high enough to match the "escalated" level and hence print needs to be paused
@@ -228,6 +242,11 @@ def pause_if_needed(printer, img_url):
 
 
 def cap_image_size(pic):
+    try:
+        im = Image.open(pic.file)
+    except UnidentifiedImageError:
+        raise ValidationError('Corrupted image.')
+
     im = Image.open(pic.file)
     if max(im.size) <= 1296:
         pic.file.seek(0)
@@ -257,19 +276,37 @@ class OctoPrinterDiscoveryView(APIView):
         if not client_ip:
             raise ImproperlyConfigured("cannot determine client_ip")
 
-        device_info: DeviceInfo = DeviceInfo.from_dict(request.data)
+        otp_response = None
+        if 'one_time_passcode' in request.data: # For the agent that supports OTP
+            one_time_passcode = request.data.pop('one_time_passcode')
+            # When the user sends a one-time passcode, it is associated with the verification_code
+            (maybe_new_one_time_passcode, verification_code) = request_one_time_passcode(one_time_passcode)
+            otp_response = {
+                'one_time_passcode': maybe_new_one_time_passcode,
+                'one_time_passlink': f'https://obico.onelink.me/fxEU/3ajxjqzd?deep_link_value=https://app.obico.io/printers/wizard/link/?one_time_passcode={maybe_new_one_time_passcode}',
+                'verification_code': verification_code}
 
-        update_presence_for_device(
-            client_ip=client_ip,
-            device_id=device_info.device_id,
-            device_info=device_info,
-        )
+        messages = []
+        device_info = request.data
 
-        messages = pull_messages_for_device(
-            client_ip=client_ip,
-            device_id=device_info.device_id
-        )
-        return Response({'messages': [m.asdict() for m in messages]})
+        device_info['host_or_ip'] = cleanup_ip(device_info['host_or_ip'])
+        if is_valid_ip(device_info['host_or_ip']) and not is_public_ip(device_info['host_or_ip']):
+            update_presence_for_device(
+                client_ip=client_ip,
+                device_id=device_info['device_id'],
+                device_info=device_info,
+            )
+
+            messages = pull_messages_for_device(
+                client_ip=client_ip,
+                device_id=device_info['device_id'],
+            )
+
+        discovery_response = {'messages': [m.asdict() for m in messages]}
+        if otp_response:
+            discovery_response.update(otp_response)
+
+        return Response(discovery_response)
 
 
 class OneTimeVerificationCodeVerifyView(APIView):
@@ -304,7 +341,7 @@ class OneTimeVerificationCodeVerifyView(APIView):
             code.save()
             return Response(OneTimeVerificationCodeSerializer(code, many=False).data)
         else:
-            raise Http404("Requested resource does not exist")
+            return Response({'detail': "Requested resource does not exist"}, status=status.HTTP_404_NOT_FOUND)
 
 
 class PrinterEventView(CreateAPIView):
@@ -325,9 +362,10 @@ class PrinterEventView(CreateAPIView):
             rotated_jpg_url = save_pic(
                         f'snapshots/{printer.id}/{str(timezone.now().timestamp())}_rotated.jpg',
                         pic,
+                        request.user.syndicate.name,
                         rotated=True,
                         printer_settings=printer.settings,
-                        to_long_term_storage=False
+                        to_long_term_storage=False,
             )
 
         print_event = PrinterEvent.create(
@@ -336,7 +374,7 @@ class PrinterEventView(CreateAPIView):
             event_type=request.data.get('event_type'),
             event_class=request.data.get('event_class'),
             event_title=request.data.get('event_title'),
-            event_text=request.data.get('event_text'),
+            event_text=request.data.get('event_text').replace('\x00', ''), # For unknown reason some events contains null bytes
             info_url=request.data.get('info_url'),
             image_url=rotated_jpg_url,
             task_handler=request.data.get('notify', '').lower() in ['t', 'true'],

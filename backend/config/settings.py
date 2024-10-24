@@ -20,7 +20,8 @@ def get_bool(key, default):
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-VERSION = os.environ.get('VERSION', '')
+VERSION = os.environ.get('VERSION') or ''
+SYNDICATE = os.environ.get('SYNDICATE') or 'base'
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/2.1/howto/deployment/checklist/
@@ -67,6 +68,7 @@ INSTALLED_APPS = [
     'qr_code',
     'app',  # app has to come before allauth for template override to work
     "channels_presence",
+    'oauth2_provider',
     'allauth',
     'allauth.account',
     'allauth.socialaccount',
@@ -77,9 +79,9 @@ INSTALLED_APPS = [
 
 if get_bool('SOCIAL_LOGIN', False):
     INSTALLED_APPS += [
-        'allauth.socialaccount.providers.facebook',
-        'allauth.socialaccount.providers.google',
         'allauth.socialaccount.providers.apple',
+        'site_specific_allauth_google_provider',
+        'site_specific_allauth_facebook_provider',
     ]
 
 MIDDLEWARE = [
@@ -89,15 +91,19 @@ MIDDLEWARE = [
     'django.middleware.gzip.GZipMiddleware',
     'app.middleware.RefreshSessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'app.middleware.TopDomainMatchingCurrentSiteMiddleware',
     'app.middleware.octoprint_tunnelv2',
     'app.middleware.check_admin_ip_whitelist',
     'allauth.account.middleware.AccountMiddleware',
     'hijack.middleware.HijackUserMiddleware',
+    'app.middleware.check_x_api',
+    'app.middleware.syndicate_header',
 ]
 
 if DEBUG:
@@ -130,7 +136,7 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
                 'django_settings_export.settings_export',
                 'app.context_processors.additional_settings_export',
-                'app.context_processors.detect_app_platform',
+                'app.context_processors.additional_context_export',
             ],
         },
     },
@@ -179,7 +185,14 @@ AUTH_PASSWORD_VALIDATORS = [
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
+USE_L10N = True
 USE_TZ = True
+
+LANGUAGES = [
+    ('en', 'English'),
+    ('zh-cn', 'Simplified Chinese'),
+]
+
 
 # Request logging for debugging purpose
 
@@ -244,7 +257,6 @@ X_FRAME_OPTIONS = 'SAMEORIGIN'
 # This allows us to interact with the popup window during autodiscovery handshake
 SECURE_CROSS_ORIGIN_OPENER_POLICY = 'unsafe-none'
 
-SITE_ID = 1
 SITE_USES_HTTPS = get_bool('SITE_USES_HTTPS', False)
 SITE_IS_PUBLIC = get_bool('SITE_IS_PUBLIC', False)
 
@@ -253,10 +265,11 @@ SITE_IS_PUBLIC = get_bool('SITE_IS_PUBLIC', False)
 REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '3600/hour',
+        'user': '3600/hour',
     },
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
-    ],
+    ]
 }
 
 if DEBUG:
@@ -270,16 +283,14 @@ RECAPTCHA_SECRET_KEY = os.environ.get('RECAPTCHA_SECRET_KEY')
 # Allauth
 
 AUTHENTICATION_BACKENDS = (
-    # Needed to login by username in Django admin, regardless of `allauth`
-    'django.contrib.auth.backends.ModelBackend',
-
-    # `allauth` specific authentication methods, such as login by e-mail
-    'allauth.account.auth_backends.AuthenticationBackend',
+    'app.accounts.SyndicateSpecificBackend',
+    'oauth2_provider.backends.OAuth2Backend',
 )
-ACCOUNT_USER_MODEL_USERNAME_FIELD = None
+ACCOUNT_USER_MODEL_USERNAME_FIELD = 'username'
 ACCOUNT_EMAIL_REQUIRED = True
+ACCOUNT_UNIQUE_EMAIL = False
 ACCOUNT_USERNAME_REQUIRED = False
-ACCOUNT_AUTHENTICATION_METHOD = 'email'
+ACCOUNT_AUTHENTICATION_METHOD = 'username'
 SOCIALACCOUNT_QUERY_EMAIL = True
 ACCOUNT_LOGOUT_ON_GET = True
 ACCOUNT_CONFIRM_EMAIL_ON_GET = True
@@ -287,7 +298,7 @@ ACCOUNT_EMAIL_VERIFICATION = 'none'
 ACCOUNT_DEFAULT_HTTP_PROTOCOL = 'https' if SITE_USES_HTTPS else 'http'
 LOGIN_REDIRECT_URL = '/'
 ACCOUNT_ALLOW_SIGN_UP = get_bool('ACCOUNT_ALLOW_SIGN_UP', False)
-
+ACCOUNT_ADAPTER = 'app.accounts.SyndicateSpecificAccountAdapter'
 AUTH_USER_MODEL = 'app.User'
 SOCIALACCOUNT_ADAPTER = 'app.accounts.SocialAccountAdapter'
 SOCIALACCOUNT_PROVIDERS = {
@@ -301,6 +312,12 @@ SOCIALACCOUNT_LOGIN_ON_GET = True
 
 if RECAPTCHA_SITE_KEY:
     ACCOUNT_FORMS = {'signup': 'app.forms.RecaptchaSignupForm'}
+
+OAUTH2_PROVIDER = {
+    'ACCESS_TOKEN_EXPIRE_SECONDS': None,
+    'SCOPES': {'read': 'Read scope', 'write': 'Write scope'},
+    'PKCE_REQUIRED': False,
+}
 
 # Layout
 TEMPLATE_LAYOUT = "layout.html"
@@ -332,7 +349,7 @@ if SENTRY_DSN:
     )
 
 # REDIS client
-REDIS_URL = os.environ.get('REDIS_URL', 'redis://redis:6379')
+REDIS_URL = os.environ.get('REDIS_URL') or 'redis://redis:6379'
 
 # Django cache
 CACHES = {
@@ -393,14 +410,14 @@ WHITENOISE_AUTOREFRESH = get_bool('WHITENOISE_AUTOREFRESH', False)
 
 TWILIO_COUNTRY_CODES = []  # serviced country codes, no restrictions by default
 
-OCTOPRINT_TUNNEL_CAP = int(os.environ.get('OCTOPRINT_TUNNEL_CAP', '1099511627776'))  # 1TB by default
+OCTOPRINT_TUNNEL_CAP = int(os.environ.get('OCTOPRINT_TUNNEL_CAP') or '1099511627776')  # 1TB by default
 OCTOPRINT_TUNNEL_SUBDOMAIN_RE = re.compile(r'^(\w+)\.tunnels.*$')
 OCTOPRINT_TUNNEL_PORT_RANGE = range(
         int(os.environ.get('OCTOPRINT_TUNNEL_PORT_RANGE').split('-')[0].strip('"\'')),
         int(os.environ.get('OCTOPRINT_TUNNEL_PORT_RANGE').split('-')[1].strip('"\'')),
     ) if os.environ.get('OCTOPRINT_TUNNEL_PORT_RANGE') else None
 
-# settings export
+# settings exported to django templates
 SETTINGS_EXPORT = [
     'VERSION',
     'TEMPLATE_LAYOUT',
@@ -426,35 +443,40 @@ CHANNEL_LAYERS = {
 }
 
 # Settings to store and serve uploaded images
+
+LT_FILE_STORAGE_MODULE = os.environ.get('LT_FILE_STORAGE_MODULE') or 'lib.fs_file_storage'
+ST_FILE_STORAGE_MODULE = os.environ.get('ST_FILE_STORAGE_MODULE') or 'lib.fs_file_storage'
 GOOGLE_APPLICATION_CREDENTIALS = os.environ.get(
     'GOOGLE_APPLICATION_CREDENTIALS')
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(STATIC_ROOT, 'media')
 INTERNAL_MEDIA_HOST = os.environ.get('INTERNAL_MEDIA_HOST')
-PICS_CONTAINER = 'tsd-pics'
-TIMELAPSE_CONTAINER = 'tsd-timelapses'
-GCODE_CONTAINER = 'tsd-gcodes'
+
+PICS_CONTAINER = os.environ.get('PICS_CONTAINER', 'tsd-pics')
+TIMELAPSE_CONTAINER = os.environ.get('TIMELAPSE_CONTAINER', 'tsd-timelapses')
+GCODE_CONTAINER = os.environ.get('GCODE_CONTAINER', 'tsd-gcodes')
+PUBLIC_VERSION_CONTAINER = os.environ.get('PUBLIC_VERSION_CONTAINER', 'public-versioned')
 
 BUCKET_PREFIX = os.environ.get('BUCKET_PREFIX')
 ML_API_HOST = os.environ.get('ML_API_HOST')
 ML_API_TOKEN = os.environ.get('ML_API_TOKEN')
 
-PIC_POST_LIMIT_PER_MINUTE = int(os.environ.get('PIC_POST_LIMIT_PER_MINUTE', 0)) # 0 means no limits
+PIC_POST_LIMIT_PER_MINUTE = int(os.environ.get('PIC_POST_LIMIT_PER_MINUTE') or '0') # 0 means no limits
 MIN_DETECTION_INTERVAL = 10 # 10s as the default interval between detections. Recommended not to change as the hyper parameters are tuned based on interval = 10s.
 
 # Hyper parameters for prediction model
 # Definitely not failing if ewm mean is below this level. =(0.4 - 0.02): 0.4 - optimal THRESHOLD_LOW in hyper params grid search; 0.02 - average of rolling_mean_short
-THRESHOLD_LOW = float(os.environ.get('THRESHOLD_LOW', '0.38'))
+THRESHOLD_LOW = float(os.environ.get('THRESHOLD_LOW') or '0.38')
 # Definitely failing if ewm mean is above this level. =(0.8 - 0.02): 0.8 - optimal THRESHOLD_HIGH in hyper params grid search; 0.02 - average of rolling_mean_short
-THRESHOLD_HIGH = float(os.environ.get('THRESHOLD_HIGH', '0.78'))
+THRESHOLD_HIGH = float(os.environ.get('THRESHOLD_HIGH') or '0.78')
 # The number of frames at the beginning of the print that are considered "safe"
-INIT_SAFE_FRAME_NUM = int(os.environ.get('INIT_SAFE_FRAME_NUM', 30))
+INIT_SAFE_FRAME_NUM = int(os.environ.get('INIT_SAFE_FRAME_NUM') or '30')
 # Print is failing is ewm mean is this many times over the short rolling mean
 ROLLING_MEAN_SHORT_MULTIPLE = float(
-    os.environ.get('ROLLING_MEAN_SHORT_MULTIPLE', 3.8))
+    os.environ.get('ROLLING_MEAN_SHORT_MULTIPLE') or '3.8')
 # The multiplication factor to escalate "warning" to "error"
-ESCALATING_FACTOR = float(os.environ.get('ESCALATING_FACTOR', 1.75))
+ESCALATING_FACTOR = float(os.environ.get('ESCALATING_FACTOR') or '1.75')
 
 # Event processing
 PRINT_EVENT_HANDLER = 'app.tasks.process_print_events'
@@ -467,6 +489,16 @@ NOTIFICATION_PLUGIN_DIRS = [
 
 ADMIN_IP_WHITELIST = json.loads(os.environ.get('ADMIN_IP_WHITELIST') or '[]')
 
+CSRF_TRUSTED_ORIGINS = json.loads(os.environ.get('CSRF_TRUSTED_ORIGINS') or '[]')
+
 # This line prevents warning messages after 3.2
 # https://docs.djangoproject.com/en/4.0/releases/3.2/#customizing-type-of-auto-created-primary-keys
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
+
+SYNDICATES = {
+  'base': {
+    'display_name': 'Obico',
+    'from_email': DEFAULT_FROM_EMAIL,
+    'docRoot': 'https://www.obico.io/docs/',
+  },
+}
